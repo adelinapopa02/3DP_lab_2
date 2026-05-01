@@ -147,13 +147,56 @@ void FeatureMatcher::exhaustiveMatching()
       // where i,j matched images indices.
       /////////////////////////////////////////////////////////////////////////////////////////
       
-      //
-      // Add your code here
-      //
+      if (matches.size() > 5)
+      {
+        // 1. Prepare vectors of points from the matches
+        std::vector<cv::Point2f> src_points, dst_points;
+
+        for (size_t k = 0; k < matches.size(); k++)
+        {
+          src_points.push_back(features_[i][matches[k].queryIdx].pt);
+          dst_points.push_back(features_[j][matches[k].trainIdx].pt);
+        }
+
+        if (src_points.size() >= 5)
+        {
+          // 2. Estimate the Essential Matrix E
+          cv::Mat mask_E;
+          cv::Mat E = cv::findEssentialMat(src_points, dst_points, new_intrinsics_matrix_, cv::RANSAC, 0.999, 1.0, mask_E);
+
+          // 3. Estimate the Homography Matrix H
+          cv::Mat mask_H;
+          cv::Mat H = cv::findHomography(src_points, dst_points, cv::RANSAC, 1.0, mask_H);
+
+          // 4. Count the number of inliers
+          int inliers_E = cv::countNonZero(mask_E);
+          int inliers_H = cv::countNonZero(mask_H);
+
+          // 5. Geometric Filtering Logic: check if there are more than 5 inliers for E and if E has more inliers than H
+          if (inliers_E > 5 && inliers_E > inliers_H)
+          {
+            for (int k = 0; k < mask_E.rows; k++) 
+            {
+              if (mask_E.at<uchar>(k))
+              {
+                inlier_matches.push_back(matches[k]);
+              }
+            }
+
+            // 6. If we still have enough matches, set them
+            if (inlier_matches.size() > 5)
+            {
+              setMatches(i, j, inlier_matches);
+            }
+          }
+        }
+      }
+
 
       /////////////////////////////////////////////////////////////////////////////////////////
     }
   }
+  testMatches(0.5);
 }
 
 void FeatureMatcher::writeToFile ( const std::string& filename, bool normalize_points ) const
