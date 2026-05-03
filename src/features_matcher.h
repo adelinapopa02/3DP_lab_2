@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <opencv2/opencv.hpp>
+#include <opencv2/dnn.hpp>
 
 class FeatureMatcher
 {
@@ -50,6 +51,7 @@ class FeatureMatcher
   void setMatches( int pos0_id, int pos1_id, const std::vector<cv::DMatch> &matches );
 
   bool use_modern_features_;
+  cv::dnn::Net net_;
   cv::Mat intrinsics_matrix_, dist_coeffs_, new_intrinsics_matrix_;
 
   std::unordered_map<int, int> pose_id_map_;

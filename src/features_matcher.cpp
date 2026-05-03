@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include <map>
+#include <opencv2/dnn.hpp>
 
 FeatureMatcher::FeatureMatcher(cv::Mat intrinsics_matrix, cv::Mat dist_coeffs,
                                bool use_modern_features, double focal_scale) :
@@ -12,6 +13,42 @@ FeatureMatcher::FeatureMatcher(cv::Mat intrinsics_matrix, cv::Mat dist_coeffs,
   new_intrinsics_matrix_ = intrinsics_matrix.clone();
   new_intrinsics_matrix_.at<double>(0,0) *= focal_scale;
   new_intrinsics_matrix_.at<double>(1,1) *= focal_scale;
+
+  if (use_modern_features_) {
+    net_ = cv::dnn::readNetFromONNX("../superpoint.onnx"); 
+    net_.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+    net_.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+
+    if (net_.empty()) {
+        std::cerr << "CRITICAL: Could not load superpoint.onnx!" << std::endl;
+    } else {
+        std::cout << "SuperPoint ONNX loaded successfully." << std::endl;
+    }
+  }
+}
+
+// Helper function for bilinear interpolation of descriptors
+float sample_bilinear(const cv::Mat& descriptors, float x, float y, int channel) 
+{
+  int width = descriptors.size[3];
+  int height = descriptors.size[2];
+
+  int x0 = (int)std::floor(x);
+  int y0 = (int)std::floor(y);
+  int x1 = std::min(x0 + 1, width - 1);
+  int y1 = std::min(y0 + 1, height - 1);
+
+  float dx = x - x0;
+  float dy = y - y0;
+
+  // Correct way to access 4D tensor: [batch=0, channel, y, x]
+  const float* data = descriptors.ptr<float>(0, channel);
+  float v00 = data[y0 * width + x0];
+  float v01 = data[y0 * width + x1];
+  float v10 = data[y1 * width + x0];
+  float v11 = data[y1 * width + x1];
+
+  return (1 - dx) * (1 - dy) * v00 + dx * (1 - dy) * v01 + (1 - dx) * dy * v10 + dx * dy * v11;
 }
 
 cv::Mat FeatureMatcher::readUndistortedImage(const std::string& filename )
@@ -73,9 +110,75 @@ void FeatureMatcher::extractFeatures()
 
       // Remeber to Look-up features colors!
 
-      //
-      // Add your code here
-      //
+      // 1. PRE-PROCESSING
+      cv::Mat gray, blob;
+      cv::cvtColor(img, gray, cv::COLOR_BGR2GRAY);
+      gray.convertTo(gray, CV_32F, 1.0 / 255.0);
+      blob = cv::dnn::blobFromImage(gray);
+
+      // 2. INFERENCE
+      net_.setInput(blob);
+      std::vector<cv::Mat> outputs;
+      std::vector<cv::String> outNames = {"scores", "descriptors"};
+      net_.forward(outputs, outNames);
+
+      cv::Mat raw_scores = outputs[0];      // [1, 65, H/8, W/8]
+      cv::Mat raw_descriptors = outputs[1]; // [1, 256, H/8, W/8]
+
+      // 3. POST-PROCESSING: Heatmap Reconstruction (65 channels -> 1 channel HxW)
+      int H = img.rows;
+      int W = img.cols;
+      cv::Mat heatmap = cv::Mat::zeros(H, W, CV_32F);
+      
+      int H8 = H / 8;
+      int W8 = W / 8;
+
+      for (int i8 = 0; i8 < H8; i8++) 
+      {
+        for (int j8 = 0; j8 < W8; j8++) 
+        {
+          for (int k = 0; k < 64; k++) 
+          {
+            int r = k / 8;
+            int c = k % 8;
+            float score_val = raw_scores.ptr<float>(0, k)[i8 * W8 + j8];
+            heatmap.at<float>(i8 * 8 + r, j8 * 8 + c) = score_val;
+          }
+        }
+      }
+
+      // 4. KEYPOINT EXTRACTION & COLOR LOOKUP
+      for (int y = 0; y < heatmap.rows; y++) 
+      {
+        for (int x = 0; x < heatmap.cols; x++) 
+        {
+          float score = heatmap.at<float>(y, x);
+          if (score > 0.015f) 
+          { 
+            features_[i].push_back(cv::KeyPoint(x, y, 1.0f));
+            feats_colors_[i].push_back(img.at<cv::Vec3b>(y, x));
+          }
+        }
+      }
+
+      // 5. DESCRIPTOR SAMPLING (Bilinear Interpolation)
+      int num_pts = features_[i].size();
+      descriptors_[i] = cv::Mat(num_pts, 256, CV_32F);
+
+      for (int k = 0; k < num_pts; k++) 
+      {
+        float x_scaled = features_[i][k].pt.x / 8.0f;
+        float y_scaled = features_[i][k].pt.y / 8.0f;
+
+        for (int d = 0; d < 256; d++) 
+        {
+          descriptors_[i].at<float>(k, d) = sample_bilinear(raw_descriptors, x_scaled, y_scaled, d);
+        }
+          
+        cv::normalize(descriptors_[i].row(k), descriptors_[i].row(k));
+      }
+      
+      std::cout << " -> Extracted " << num_pts << " SuperPoint features." << std::endl;
     }
     else
     {
@@ -94,9 +197,7 @@ void FeatureMatcher::extractFeatures()
 }
 
 void FeatureMatcher::exhaustiveMatching()
-{
-  std::vector<cv::DMatch> matches, inlier_matches;
-  
+{  
   for( int i = 0; i < images_names_.size() - 1; i++ )
   {
     for( int j = i + 1; j < images_names_.size(); j++ )
@@ -104,6 +205,7 @@ void FeatureMatcher::exhaustiveMatching()
       std::cout<<"Matching image "<<i<<" with image "<<j<<std::endl;
       std::vector<cv::DMatch> matches, inlier_matches;
 
+      cv::Ptr<cv::DescriptorMatcher> matcher;
       if( use_modern_features_ )
       {
         // Modern descriptors (SuperPoint, etc.) are usually float matrices.
@@ -116,19 +218,20 @@ void FeatureMatcher::exhaustiveMatching()
         // In this case, you may follow OPTION A or OPTION A (see above).
         /////////////////////////////////////////////////////////////////////////////////////////
 
-        //
-        // Add your code here
-        //
-
+        matcher = cv::BFMatcher::create(cv::NORM_L2, true);
         /////////////////////////////////////////////////////////////////////////////////////////
 
       }
       else
       {
-        std::cout<<"Matching image "<<i<<" with image "<<j<<std::endl;
-        auto matcher = cv::BFMatcher::create(cv::NORM_HAMMING, true);
-        matcher->match(descriptors_[i], descriptors_[j], matches);
+        matcher = cv::BFMatcher::create(cv::NORM_HAMMING, true);
       }
+
+      if (!descriptors_[i].empty() && !descriptors_[j].empty()) {
+          matcher->match(descriptors_[i], descriptors_[j], matches);
+      }
+
+      std::cout << "Raw matches: " << matches.size() << " | ";
 
       //////////////////////////// Code to be completed (1/7) /////////////////////////////////
       // Perform Geometric Verification of matches, possibly discarding the outliers
@@ -191,7 +294,7 @@ void FeatureMatcher::exhaustiveMatching()
           }
         }
       }
-
+      std::cout << "Inliers found: " << inlier_matches.size() << std::endl;
 
       /////////////////////////////////////////////////////////////////////////////////////////
     }
