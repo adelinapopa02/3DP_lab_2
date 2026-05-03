@@ -35,9 +35,9 @@ int main(int argc, char **argv)
   std::cout<<"Distortion coefficients :"<<std::endl<<dist_coeffs<<std::endl;
 
   if(use_modern_features)
-    std::cout<<"Using classical features"<<std::endl;
-  else
     std::cout<<"Using modern features"<<std::endl;
+  else
+    std::cout<<"Using classical features"<<std::endl;
 
   std::cout<<"Focal length scale :"<<std::endl<<focal_scale<<std::endl;
 
