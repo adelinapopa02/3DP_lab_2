@@ -897,6 +897,85 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
     // Execute an iteration of bundle adjustment
     bundleAdjustmentIter(new_cam_pose_idx );
 
+    //////////////////////////// Code to be completed (7/7) //////////////////////////////////
+    // The reconstruction may diverge due to outlier triangulations or the bundle adjustment
+    // getting stucked in poor local minima. This often manifests as 'exploding' geometry,
+    // where camera centers or 3D points are projected to extreme distances from the origin.
+    // If such instability is detected, for instance, by monitoring unusually large updates
+    // to camera poses or point coordinates during an iteration, the reconstruction should
+    // be reset. In this case, the function must return false to trigger a restart with
+    // a different seed pair.
+    /////////////////////////////////////////////////////////////////////////////////////////
+
+    bool diverged = false;
+
+    // Check camera poses
+    for(int i_c = 0; i_c < num_cam_poses_ && !diverged; i_c++)
+    {
+      if (cam_pose_optim_iter_[i_c] > 0)
+      {
+        double *cam = cameraBlockPtr(i_c);
+        // Check translation magnitude
+        double t_norm = std::sqrt(cam[3]*cam[3] + cam[4]*cam[4] + cam[5]*cam[5]);
+        // Check rotation magnitude (axis-angle norm)
+        double r_norm = std::sqrt(cam[0]*cam[0] + cam[1]*cam[1] + cam[2]*cam[2]);
+
+        if (t_norm > 1000.0 || r_norm > 10.0)
+        {
+          std::cout << "*** DIVERGENCE DETECTED: camera " << i_c << " t_norm=" << t_norm << " r_norm=" << r_norm << " ***" << std::endl;
+          diverged = true;
+        }
+      }
+    }
+
+    // Check mean reprojection error
+    if (!diverged)
+    {
+      double total_err = 0.0;
+      int n_obs = 0;
+      for (int i_obs = 0; i_obs < num_observations_; i_obs++)
+      {
+        if (cam_pose_optim_iter_[cam_pose_index_[i_obs]] > 0 && pts_optim_iter_[point_index_[i_obs]] > 0)
+        {
+          double *camera = cameraBlockPtr(cam_pose_index_[i_obs]);
+          double *point  = pointBlockPtr (point_index_[i_obs]);
+          double p[3];
+          
+          ceres::AngleAxisRotatePoint(camera, point, p);
+          p[0] += camera[3]; p[1] += camera[4]; p[2] += camera[5];
+          
+          // Zero-depth check
+          if (std::fabs(p[2]) < 1e-10) 
+          { 
+            diverged = true; break; 
+          }
+          
+          double px = p[0]/p[2], py = p[1]/p[2];
+          double ex = px - observations_[2*i_obs];
+          double ey = py - observations_[2*i_obs+1];
+          
+          total_err += std::sqrt(ex*ex + ey*ey);
+          n_obs++;
+        }
+      }
+      if (n_obs > 0)
+      {
+        double mean_err = total_err / n_obs;
+        if (mean_err > 0.5)   // 0.5 in normalised coords ~ many pixels in pixel space
+        {
+          std::cout << "*** DIVERGENCE DETECTED: mean reproj error = " << mean_err << " ***" << std::endl;
+          diverged = true;
+        }
+      }
+    }
+
+    if (diverged)
+    {
+      return false;
+    }
+
+    // Moved existing geometry outlier filter: don't waste time filtering if the reconstruction could diverge.
+    // Filter when you are sure the configuration is good.
     Eigen::Vector3d vol_min = Eigen::Vector3d::Constant((std::numeric_limits<double>::max())),
         vol_max = Eigen::Vector3d::Constant((-std::numeric_limits<double>::max()));
     for(int i_c = 0; i_c < num_cam_poses_; i_c++ )
@@ -927,21 +1006,6 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
         pts_optim_iter_[i] = -1;
       }
     }
-    //////////////////////////// Code to be completed (7/7) //////////////////////////////////
-    // The reconstruction may diverge due to outlier triangulations or the bundle adjustment
-    // getting stucked in poor local minima. This often manifests as 'exploding' geometry,
-    // where camera centers or 3D points are projected to extreme distances from the origin.
-    // If such instability is detected, for instance, by monitoring unusually large updates
-    // to camera poses or point coordinates during an iteration, the reconstruction should
-    // be reset. In this case, the function must return false to trigger a restart with
-    // a different seed pair.
-    /////////////////////////////////////////////////////////////////////////////////////////
-
-    //
-    // Add your code here
-    //
-    //  if( < reconstruction has diverged > )
-    //    return false;
 
     /////////////////////////////////////////////////////////////////////////////////////////
   }
