@@ -1029,7 +1029,8 @@ void BasicSfM::initCamParams(int new_pose_idx, cv::Mat r_vec, cv::Mat t_vec )
 void BasicSfM::bundleAdjustmentIter( int new_cam_idx )
 {
   ceres::Solver::Options options;
-  options.linear_solver_type = ceres::DENSE_SCHUR;
+  options.linear_solver_type = ceres::ITERATIVE_SCHUR;
+  options.preconditioner_type = ceres::JACOBI;
   options.minimizer_progress_to_stdout = false;
   options.num_threads = 4;
   options.max_num_iterations = 200;
