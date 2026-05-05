@@ -529,10 +529,60 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
   // init_t_vec; defined above
   /////////////////////////////////////////////////////////////////////////////////////////
 
-  //
-  // Add your code here
-  //
+  // Estimate E
+  cv::Mat E = cv::findEssentialMat(points0, points1, intrinsics_matrix, cv::RANSAC, 0.999, 0.001, inlier_mask_E);
+  if (E.empty()) 
+  {
+    std::cout << "[seed] Essential matrix estimation failed." << std::endl;
+    return false;
+  }
 
+  // Estimate H
+  cv::Mat H_mat = cv::findHomography(points0, points1, cv::RANSAC, 0.001, inlier_mask_H);
+
+  // Count inliers
+  int n_E = inlier_mask_E.empty() ? 0 : cv::countNonZero(inlier_mask_E);
+  int n_H = inlier_mask_H.empty() ? 0 : cv::countNonZero(inlier_mask_H);
+
+  std::cout << "[seed pair " << seed_pair_idx0 << "-" << seed_pair_idx1 << "] n_E=" << n_E << "  n_H=" << n_H << std::endl;
+
+  // Reject pair 
+  if (n_E < 8 || n_H >= n_E)
+  {
+    std::cout << "[seed] Degenerate pair (H dominates or too few E inliers), skipping." << std::endl;
+    return false;
+  }
+
+  // Recover R, t from E
+  int n_positive = cv::recoverPose(E, points0, points1, intrinsics_matrix, init_r_mat, init_t_vec, inlier_mask_E);
+
+  std::cout << "[seed] Points in front of both cameras: " << n_positive << std::endl;
+
+  if (n_positive < 8)
+  {
+    std::cout << "[seed] Too few points pass cheirality, skipping." << std::endl;
+    return false;
+  }
+
+  // Check sideward motion
+  double tx = init_t_vec.at<double>(0,0);
+  double ty = init_t_vec.at<double>(1,0);
+  double tz = init_t_vec.at<double>(2,0);
+  double t_norm = std::sqrt(tx*tx + ty*ty + tz*tz);
+
+  if (t_norm < 1e-9)
+  {
+    std::cout << "[seed] Zero translation, skipping." << std::endl;
+    return false;
+  }
+
+  // Accept if the forward component is less than 90% of the total translation
+  if (std::fabs(tz) > 0.9 * t_norm)
+  {
+    std::cout << "[seed] Forward motion dominates (tz/|t|=" << tz/t_norm << "), skipping." << std::endl;
+    return false;
+  }
+  
   /////////////////////////////////////////////////////////////////////////////////////////
 
   int ref_cam_pose_idx = seed_pair_idx0, new_cam_pose_idx = seed_pair_idx1;
