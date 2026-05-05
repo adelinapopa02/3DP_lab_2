@@ -23,9 +23,41 @@ struct ReprojectionError
   // pay attention to the order of the template parameters
   //////////////////////////////////////////////////////////////////////////////////////////
   
-  //
-  // Add your code here
-  //
+  ReprojectionError(double obs_x, double obs_y) : observed_x_(obs_x), observed_y_(obs_y) {}
+
+  template <typename T>
+  bool operator()(const T* const camera,  // 6 params: [r0,r1,r2, t0,t1,t2]
+                  const T* const point,   // 3 params: [X, Y, Z]
+                  T* residuals) const     // 2 residuals
+  {
+    // Rotate 3-D point by the axis-angle rotation stored in camera[0..2]
+    T p[3];
+    ceres::AngleAxisRotatePoint(camera, point, p);
+
+    // Apply translation: camera[3..5] = t
+    p[0] += camera[3];
+    p[1] += camera[4];
+    p[2] += camera[5];
+
+    // Canonical (K=I) perspective projection
+    T predicted_x = p[0] / p[2];
+    T predicted_y = p[1] / p[2];
+
+    // Residuals: observed - predicted
+    residuals[0] = T(observed_x_) - predicted_x;
+    residuals[1] = T(observed_y_) - predicted_y;
+
+    return true;
+  }
+
+  // Factory method: creates a cost function with automatic differentiation.
+  // Template params: <Functor, NumResiduals, CamBlockSize, PointBlockSize>
+  static ceres::CostFunction* Create(double obs_x, double obs_y)
+  {
+    return new ceres::AutoDiffCostFunction<ReprojectionError, 2, 6, 3> (new ReprojectionError(obs_x, obs_y));
+  }
+  
+  double observed_x_, observed_y_;
   
   /////////////////////////////////////////////////////////////////////////////////////////
 };
