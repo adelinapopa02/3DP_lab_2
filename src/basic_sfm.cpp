@@ -56,7 +56,7 @@ struct ReprojectionError
   {
     return new ceres::AutoDiffCostFunction<ReprojectionError, 2, 6, 3> (new ReprojectionError(obs_x, obs_y));
   }
-  
+
   double observed_x_, observed_y_;
   
   /////////////////////////////////////////////////////////////////////////////////////////
@@ -1004,9 +1004,15 @@ void BasicSfM::bundleAdjustmentIter( int new_cam_idx )
         // where 'a' is a scale parameter (e.g., 1.0 or 2 * max_reproj_err_).
         //////////////////////////////////////////////////////////////////////////////////
 
-        //
-        // Add your code here
-        //
+        double obs_x = observations_[2*i_obs];
+        double obs_y = observations_[2*i_obs + 1];
+
+        ceres::CostFunction* cost = ReprojectionError::Create(obs_x, obs_y);
+
+        // Robust Huber loss (scale = 2 * max_reproj_err_)
+        ceres::LossFunction* loss = new ceres::HuberLoss(2.0 * max_reproj_err_);
+
+        problem.AddResidualBlock(cost, loss, cameraBlockPtr(cam_pose_index_[i_obs]), pointBlockPtr(point_index_[i_obs]));
         
         /////////////////////////////////////////////////////////////////////////////////////////
 
