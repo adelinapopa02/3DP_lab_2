@@ -1,7 +1,7 @@
 # extract_superpoint.py
 
 # Run from build 
-# python ../modern_features/extract_superpoint.py ../modern_features/superpoint_v1.pth ../datasets/images_1 ../datasets/3dp_cam.yml features/ 1.1
+# python ../modern_features/extract_superpoint.py ../modern_features/superpoint_v1.pth ../datasets/images_1 ../datasets/3dp_cam.yml 1.1
 
 import torch
 import torch.nn as nn
@@ -9,6 +9,7 @@ import numpy as np
 import cv2
 import os
 import sys
+import shutil
 
 class SuperPointNet(nn.Module):
     def __init__(self):
@@ -88,7 +89,7 @@ def extract(model, img_bgr, intrinsics, dist_coeffs, new_intrinsics,
     sy = und.shape[0] / H
     kpts = np.stack([xs * sx, ys * sy], axis=1).astype(np.float32)
 
-    desc_np = desc_raw.squeeze(0).numpy()  # (256, Hc, Wc)
+    desc_np = desc_raw.squeeze(0).numpy()
     fpx = np.clip(xs / 8.0, 0, Wc - 1)
     fpy = np.clip(ys / 8.0, 0, Hc - 1)
     x0 = fpx.astype(int); x1 = np.clip(x0+1, 0, Wc-1)
@@ -98,7 +99,7 @@ def extract(model, img_bgr, intrinsics, dist_coeffs, new_intrinsics,
     descs = (((1-wy)*(1-wx)) * desc_np[:, y0, x0] +
              ((1-wy)*(  wx)) * desc_np[:, y0, x1] +
              ((  wy)*(1-wx)) * desc_np[:, y1, x0] +
-             ((  wy)*(  wx)) * desc_np[:, y1, x1]).T  # (N, 256)
+             ((  wy)*(  wx)) * desc_np[:, y1, x1]).T
     norms = np.linalg.norm(descs, axis=1, keepdims=True)
     descs = descs / (norms + 1e-8)
 
@@ -106,15 +107,19 @@ def extract(model, img_bgr, intrinsics, dist_coeffs, new_intrinsics,
 
 
 if __name__ == '__main__':
-    if len(sys.argv) < 5:
-        print("Usage: python extract_superpoint.py <weights.pth> <image_dir> <calib.yml> <output_dir> [focal_scale]")
+    if len(sys.argv) < 4:
+        print("Usage: python extract_superpoint.py <weights.pth> <image_dir> <calib.yml> [focal_scale]")
         sys.exit(1)
+    
+    output_dir   = "features/"
+    if os.path.exists(output_dir):
+        print(f"Cleaning existing directory: {output_dir}")
+        shutil.rmtree(output_dir)
 
     weights_path = sys.argv[1]
     image_dir    = sys.argv[2]
     calib_path   = sys.argv[3]
-    output_dir   = sys.argv[4]
-    focal_scale  = float(sys.argv[5]) if len(sys.argv) > 5 else 1.1
+    focal_scale  = float(sys.argv[4]) if len(sys.argv) > 4 else 1.1
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -139,8 +144,6 @@ if __name__ == '__main__':
         img = cv2.imread(os.path.join(image_dir, img_name))
         kpts, descs = extract(model, img, K, dist, new_K)
 
-        # One .txt file per image: first line = N
-        # Then N lines of: x y d0 d1 ... d255
         out_path = os.path.join(output_dir, os.path.splitext(img_name)[0] + ".txt")
         with open(out_path, 'w') as f:
             f.write(f"{len(kpts)}\n")
