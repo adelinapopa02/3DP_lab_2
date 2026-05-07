@@ -14,6 +14,9 @@ class FeatureMatcher
   FeatureMatcher( cv::Mat intrinsics_matrix, cv::Mat dist_coeffs,
                   bool use_modern_features = false, double focal_scale = 1.0 );
 
+  // Task (2/7)
+  void loadExternalFeatures(const std::string& image_path, std::vector<cv::KeyPoint>& features, cv::Mat& descriptors);
+
   // Set the list of names of the images from which to extract the features
   void setImagesNames( const std::vector<std::string> &images_names ) { images_names_ = images_names; };
 

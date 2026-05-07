@@ -3,6 +3,9 @@
 #include <iostream>
 #include <map>
 #include <opencv2/dnn.hpp>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
 
 FeatureMatcher::FeatureMatcher(cv::Mat intrinsics_matrix, cv::Mat dist_coeffs,
                                bool use_modern_features, double focal_scale) :
@@ -21,6 +24,34 @@ cv::Mat FeatureMatcher::readUndistortedImage(const std::string& filename )
   cv::undistort	(	img, und_img, intrinsics_matrix_, dist_coeffs_, new_intrinsics_matrix_ );
 
   return und_img;
+}
+
+void FeatureMatcher::loadExternalFeatures(const std::string& image_path, std::vector<cv::KeyPoint>& features, cv::Mat& descriptors)
+{
+  std::string fname = image_path.substr(image_path.find_last_of("/\\") + 1);
+  fname = fname.substr(0, fname.find_last_of('.')) + ".txt";
+  std::string feat_path = "features/" + fname;
+
+  std::ifstream f(feat_path);
+  if (!f.is_open()) 
+  {
+    std::cerr << "[SuperPoint] Cannot open: " << feat_path << std::endl;
+    return;
+  }
+
+  int N;
+  f >> N;
+
+  descriptors = cv::Mat(N, 256, CV_32F);
+  for (int k = 0; k < N; k++)
+  {
+    float x, y;
+    f >> x >> y;
+    features.emplace_back(cv::KeyPoint(x, y, 8.f, -1.f, 0.f));
+    float* row = descriptors.ptr<float>(k);
+    for (int d = 0; d < 256; d++)
+      f >> row[d];
+  }
 }
 
 void FeatureMatcher::extractFeatures()
@@ -74,186 +105,19 @@ void FeatureMatcher::extractFeatures()
 
       // Remeber to Look-up features colors!
 
-      static cv::dnn::Net superpoint_net;
-      static bool net_loaded = false;
-      static bool net_failed = false;
+      loadExternalFeatures(images_names_[i], features_[i], descriptors_[i]);
 
-      if (!net_loaded && !net_failed)
+      // Fill colours after loading
+      cv::Mat img = readUndistortedImage(images_names_[i]);
+      for (auto& feat : features_[i]) 
       {
-        try {
-          superpoint_net = cv::dnn::readNet("../superpoint.onnx");
-          superpoint_net.setPreferableBackend(cv::dnn::DNN_BACKEND_DEFAULT);
-          superpoint_net.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
-          net_loaded = true;
-          std::cout << "[SuperPoint] Model loaded successfully." << std::endl;
-        } catch (const cv::Exception& e) {
-          std::cerr << "[SuperPoint] Failed to load model: " << e.what() << "\n  -> Falling back to ORB." << std::endl;
-          net_failed = true;
-        }
+        int px = std::min(std::max(cvRound(feat.pt.x), 0), img.cols-1);
+        int py = std::min(std::max(cvRound(feat.pt.y), 0), img.rows-1);
+        feats_colors_[i].emplace_back(img.at<cv::Vec3b>(py, px));
       }
 
-      if (net_loaded)
-      {
-        // Pre-process
-        cv::Mat gray;
-        cv::cvtColor(img, gray, cv::COLOR_BGR2GRAY);
-        gray.convertTo(gray, CV_32F, 1.0 / 255.0);
-
-        int H = (gray.rows / 8) * 8;
-        int W = (gray.cols  / 8) * 8;
-        cv::Mat gray_in;
-        cv::resize(gray, gray_in, cv::Size(W, H));
-
-        int Hc = H / 8, Wc = W / 8;
-
-        // Build blob and run inference
-        cv::Mat blob = cv::dnn::blobFromImage(gray_in);
-        superpoint_net.setInput(blob);
-
-        std::vector<std::string> out_names = superpoint_net.getUnconnectedOutLayersNames();
-        std::vector<cv::Mat> outs;
-        superpoint_net.forward(outs, out_names);
-
-        // Identify score / descriptor tensors by channel count
-        cv::Mat scores_raw, desc_raw;
-        for (auto& out : outs) {
-          if (out.dims >= 4 && out.size[1] == 256)
-            desc_raw = out;
-          else
-            scores_raw = out;
-        }
-
-        if (scores_raw.empty() || desc_raw.empty())
-        {
-          std::cerr << "[SuperPoint] Unexpected output layout, using ORB." << std::endl;
-          goto use_orb;
-        }
-
-        // Decode score heatmap
-        cv::Mat heatmap(H, W, CV_32F, 0.0f);
-
-        auto get4d = [](const cv::Mat& m, int ch, int r, int c) -> float {
-          int rows = m.size[2], cols = m.size[3];
-          return m.ptr<float>()[ch * rows * cols + r * cols + c];
-        };
-
-        if (scores_raw.size[1] == 65)
-        {
-          for (int r = 0; r < Hc; r++)
-            for (int c = 0; c < Wc; c++)
-            {
-              float mx = -1e9f;
-              for (int ch = 0; ch < 65; ch++)
-                mx = std::max(mx, get4d(scores_raw, ch, r, c));
-              float s = 0.f;
-              std::vector<float> ex(65);
-              for (int ch = 0; ch < 65; ch++) {
-                ex[ch] = std::exp(get4d(scores_raw, ch, r, c) - mx);
-                s += ex[ch];
-              }
-              for (int dy = 0; dy < 8; dy++)
-                for (int dx = 0; dx < 8; dx++) {
-                  int ch = dy * 8 + dx;
-                  int py = r * 8 + dy, px = c * 8 + dx;
-                  if (py < H && px < W)
-                    heatmap.at<float>(py, px) = ex[ch] / s;
-                }
-            }
-        }
-        else
-        {
-          for (int r = 0; r < H; r++)
-            for (int c = 0; c < W; c++)
-              heatmap.at<float>(r, c) = get4d(scores_raw, 0, r, c);
-        }
-
-        // NMS: keep local maxima above threshold
-        const int NMS_R = 4;
-        const float SCORE_THR = 0.015f;
-        const int MAX_KP = 1000;
-
-        std::vector<std::pair<float, cv::Point>> scored_pts;
-        for (int r = NMS_R; r < H - NMS_R; r++)
-          for (int c = NMS_R; c < W - NMS_R; c++)
-          {
-            float v = heatmap.at<float>(r, c);
-            if (v < SCORE_THR) continue;
-            bool is_max = true;
-            for (int dr = -NMS_R; dr <= NMS_R && is_max; dr++)
-              for (int dc = -NMS_R; dc <= NMS_R && is_max; dc++)
-                if ((dr || dc) && heatmap.at<float>(r+dr, c+dc) >= v)
-                  is_max = false;
-            if (is_max)
-              scored_pts.push_back({v, cv::Point(c, r)});
-          }
-
-        std::sort(scored_pts.begin(), scored_pts.end(),
-                  [](auto& a, auto& b){ return a.first > b.first; });
-        if ((int)scored_pts.size() > MAX_KP)
-          scored_pts.resize(MAX_KP);
-
-        float sx = (float)img.cols / W;
-        float sy = (float)img.rows / H;
-
-        // Sample + L2-normalise descriptors
-        int nkp = (int)scored_pts.size();
-        cv::Mat desc_out(nkp, 256, CV_32F);
-
-        for (int k = 0; k < nkp; k++)
-        {
-          float fpx = scored_pts[k].second.x / 8.0f;
-          float fpy = scored_pts[k].second.y / 8.0f;
-          fpx = std::min(std::max(fpx, 0.f), (float)(Wc - 1));
-          fpy = std::min(std::max(fpy, 0.f), (float)(Hc - 1));
-
-          int x0 = (int)fpx, y0 = (int)fpy;
-          int x1 = std::min(x0+1, Wc-1), y1 = std::min(y0+1, Hc-1);
-          float wx = fpx - x0, wy = fpy - y0;
-
-          float* row = desc_out.ptr<float>(k);
-          auto getd = [&](int d, int r, int c) -> float {
-            return desc_raw.ptr<float>()[d * Hc * Wc + r * Wc + c];
-          };
-
-          float nsq = 0.f;
-          for (int d = 0; d < 256; d++) {
-            float v = (1-wy)*(1-wx)*getd(d,y0,x0)
-                    + (1-wy)*   wx *getd(d,y0,x1)
-                    +    wy *(1-wx)*getd(d,y1,x0)
-                    +    wy *   wx *getd(d,y1,x1);
-            row[d] = v;  nsq += v*v;
-          }
-          float inv = (nsq > 1e-10f) ? 1.f / std::sqrt(nsq) : 0.f;
-          for (int d = 0; d < 256; d++) row[d] *= inv;
-
-          // Store keypoint in original image space + colour
-          float ox = scored_pts[k].second.x * sx;
-          float oy = scored_pts[k].second.y * sy;
-          features_[i].emplace_back(cv::KeyPoint(ox, oy, 8.f, -1.f, scored_pts[k].first));
-        }
-
-        descriptors_[i] = desc_out;
-
-        feats_colors_[i].reserve(features_[i].size());
-        for (auto& f : features_[i]) {
-          int px = std::min(std::max(cvRound(f.pt.x), 0), img.cols-1);
-          int py = std::min(std::max(cvRound(f.pt.y), 0), img.rows-1);
-          feats_colors_[i].emplace_back(img.at<cv::Vec3b>(py, px));
-        }
-
-        std::cout << "[SuperPoint] " << features_[i].size() << " keypoints for image " << i << std::endl;
-      }
-      else
-      {
-        // ORB fallback when SuperPoint model is unavailable
-        use_orb:
-        orb_detector->detectAndCompute(img, cv::Mat(), features_[i], descriptors_[i]);
-        feats_colors_[i].reserve(features_[i].size());
-        for (auto& f : features_[i])
-          feats_colors_[i].emplace_back(img.at<cv::Vec3b>(
-              std::min(std::max(cvRound(f.pt.y),0),img.rows-1),
-              std::min(std::max(cvRound(f.pt.x),0),img.cols-1)));
-      }
+      std::cout << "[SuperPoint] Image " << i << ": " << features_[i].size() << " keypoints loaded." << std::endl;
+      
     }
     else
     {

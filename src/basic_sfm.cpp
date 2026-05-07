@@ -799,84 +799,64 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
             // pt[1] = /*X coordinate of the estimated point */;
             // pt[2] = /*X coordinate of the estimated point */;
             /////////////////////////////////////////////////////////////////////////////////////////
+  
+            // Build 3x4 projection matrix for cam0 (new camera)
+            cv::Mat r0_vec = (cv::Mat_<double>(3,1) << cam0_data[0], cam0_data[1], cam0_data[2]);
+            cv::Mat t0_vec = (cv::Mat_<double>(3,1) << cam0_data[3], cam0_data[4], cam0_data[5]);
+            cv::Mat R0; cv::Rodrigues(r0_vec, R0);
+            cv::Mat_<double> P0 = cv::Mat_<double>::zeros(3,4);
+            R0.copyTo(P0(cv::Rect(0,0,3,3)));
+            t0_vec.copyTo(P0(cv::Rect(3,0,1,3)));
+  
+            // Build 3x4 projection matrix for cam1 (registered camera)
+            cv::Mat r1_vec = (cv::Mat_<double>(3,1) << cam1_data[0], cam1_data[1], cam1_data[2]);
+            cv::Mat t1_vec = (cv::Mat_<double>(3,1) << cam1_data[3], cam1_data[4], cam1_data[5]);
+            cv::Mat R1; cv::Rodrigues(r1_vec, R1);
+            cv::Mat_<double> P1 = cv::Mat_<double>::zeros(3,4);
+            R1.copyTo(P1(cv::Rect(0,0,3,3)));
+            t1_vec.copyTo(P1(cv::Rect(3,0,1,3)));
+  
+            // Retrieve 2D observations for this point in both cameras
+            int obs0_idx = cam_observation_[new_cam_pose_idx][pt_idx];
+            int obs1_idx = co_iter.second;
+  
+            cv::Mat pts0_m = (cv::Mat_<double>(2,1) << observations_[obs0_idx*2], observations_[obs0_idx*2+1]);
+            cv::Mat pts1_m = (cv::Mat_<double>(2,1) << observations_[obs1_idx*2], observations_[obs1_idx*2+1]);
+  
+            // Triangulate
+            cv::Mat hpt4D;
+            cv::triangulatePoints(P0, P1, pts0_m, pts1_m, hpt4D);
+  
+            // Homogeneous divide
+            double w = hpt4D.at<double>(3,0);
+            if (std::fabs(w) < 1e-10) continue;
+  
+            double X = hpt4D.at<double>(0,0) / w;
+            double Y = hpt4D.at<double>(1,0) / w;
+            double Z = hpt4D.at<double>(2,0) / w;
 
-            int n_new_pts = 0;
-            for (int cam_idx = 0; cam_idx < num_cam_poses_; cam_idx++)
+            if (Z <= 0) continue;
+  
+            // Store point and check cheirality for both cameras
+            double *pt3d = pointBlockPtr(pt_idx);
+            pt3d[0] = X; pt3d[1] = Y; pt3d[2] = Z;
+            pts_optim_iter_[pt_idx] = 1;  // mark temporarily
+  
+            bool ok0 = checkCheiralityConstraint(new_cam_pose_idx, pt_idx);
+            bool ok1 = checkCheiralityConstraint(cam_idx, pt_idx);
+  
+            if (ok0 && ok1)
             {
-              if (cam_pose_optim_iter_[cam_idx] > 0) 
-              {
-                for( auto const& co_iter : cam_observation_[cam_idx] )
-                {
-                  auto &pt_idx = co_iter.first;
-                  if(pts_optim_iter_[pt_idx] == 0 && cam_observation_[new_cam_pose_idx].find(pt_idx) != cam_observation_[new_cam_pose_idx].end())
-                  {
-                    double *cam0_data = cameraBlockPtr(new_cam_pose_idx);  // new camera
-                    double *cam1_data = cameraBlockPtr(cam_idx);           // already-registered camera
-
-                    // Build 3×4 projection matrix for cam0 (new camera)
-                    cv::Mat r0_vec = (cv::Mat_<double>(3,1) << cam0_data[0], cam0_data[1], cam0_data[2]);
-                    cv::Mat t0_vec = (cv::Mat_<double>(3,1) << cam0_data[3], cam0_data[4], cam0_data[5]);
-                    cv::Mat R0; cv::Rodrigues(r0_vec, R0);
-                    cv::Mat_<double> P0 = cv::Mat_<double>::zeros(3,4);
-                    R0.copyTo(P0(cv::Rect(0,0,3,3)));
-                    t0_vec.copyTo(P0(cv::Rect(3,0,1,3)));
-
-                    // Build 3×4 projection matrix for cam1 (registered camera)
-                    cv::Mat r1_vec = (cv::Mat_<double>(3,1) << cam1_data[0], cam1_data[1], cam1_data[2]);
-                    cv::Mat t1_vec = (cv::Mat_<double>(3,1) << cam1_data[3], cam1_data[4], cam1_data[5]);
-                    cv::Mat R1; cv::Rodrigues(r1_vec, R1);
-                    cv::Mat_<double> P1 = cv::Mat_<double>::zeros(3,4);
-                    R1.copyTo(P1(cv::Rect(0,0,3,3)));
-                    t1_vec.copyTo(P1(cv::Rect(3,0,1,3)));
-
-                    // Retrieve the 2D observations for this point in both cameras
-                    int obs0_idx = cam_observation_[new_cam_pose_idx][pt_idx];
-                    int obs1_idx = co_iter.second;
-
-                    cv::Point2d pt0(observations_[obs0_idx*2],   observations_[obs0_idx*2+1]);
-                    cv::Point2d pt1(observations_[obs1_idx*2],   observations_[obs1_idx*2+1]);
-
-                    // Triangulate: input = 2×1 matrices of 2D points
-                    cv::Mat pts0_m = (cv::Mat_<double>(2,1) << pt0.x, pt0.y);
-                    cv::Mat pts1_m = (cv::Mat_<double>(2,1) << pt1.x, pt1.y);
-                    cv::Mat hpt4D;
-                    cv::triangulatePoints(P0, P1, pts0_m, pts1_m, hpt4D);
-
-                    // Homogeneous divide
-                    double w = hpt4D.at<double>(3,0);
-                    if (std::fabs(w) < 1e-10) continue;
-
-                    double X = hpt4D.at<double>(0,0) / w;
-                    double Y = hpt4D.at<double>(1,0) / w;
-                    double Z = hpt4D.at<double>(2,0) / w;
-
-                    // Temporarily store the point and check cheirality for both cameras
-                    double *pt3d = pointBlockPtr(pt_idx);
-                    pt3d[0] = X; pt3d[1] = Y; pt3d[2] = Z;
-
-                    // Mark as optimised temporarily to use checkCheiralityConstraint
-                    pts_optim_iter_[pt_idx] = 1;
-
-                    bool ok0 = checkCheiralityConstraint(new_cam_pose_idx, pt_idx);
-                    bool ok1 = checkCheiralityConstraint(cam_idx, pt_idx);
-
-                    if (ok0 && ok1)
-                    {
-                      // Accept the point
-                      n_new_pts++;
-                      // pts_optim_iter_ already set to 1 above
-                    }
-                    else
-                    {
-                      // Reject
-                      pts_optim_iter_[pt_idx] = 0;
-                      pt3d[0] = pt3d[1] = pt3d[2] = 0.0;
-                    }                    
-                  }
-                }
-              }
+              n_new_pts++;
+              // Keep pts_optim_iter_[pt_idx] = 1 (accepted)
             }
-
+            else
+            {
+              // Cheirality failed with this camera pair - reset to 0 so another
+              // registered camera may triangulate it successfully
+              pts_optim_iter_[pt_idx] = 0;
+              pt3d[0] = pt3d[1] = pt3d[2] = 0.0;
+            }
             /////////////////////////////////////////////////////////////////////////////////////////
 
           }
@@ -920,7 +900,7 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
         // Check rotation magnitude (axis-angle norm)
         double r_norm = std::sqrt(cam[0]*cam[0] + cam[1]*cam[1] + cam[2]*cam[2]);
 
-        if (t_norm > 1000.0 || r_norm > 10.0)
+        if (t_norm > 50.0 || r_norm > 10.0)
         {
           std::cout << "*** DIVERGENCE DETECTED: camera " << i_c << " t_norm=" << t_norm << " r_norm=" << r_norm << " ***" << std::endl;
           diverged = true;
