@@ -51,7 +51,7 @@ class SuperPointNet(nn.Module):
 
 
 def extract(model, img_bgr, intrinsics, dist_coeffs, new_intrinsics,
-            nms_radius=3, score_thresh=0.005, max_kp=3000):
+            nms_radius=2, score_thresh=0.002, max_kp=3000):
 
     und = cv2.undistort(img_bgr, intrinsics, dist_coeffs, None, new_intrinsics)
     H = (und.shape[0] // 8) * 8
