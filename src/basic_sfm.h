@@ -39,6 +39,8 @@ class BasicSfM
 
  private:
 
+  double computeReprojectionError(int obs_idx) const;
+
   // Given a seed pair, perform incremental mapping via iterations composed by PnP-based image registration,
   // triangulation of new points, and bundle adjustment
   bool incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1 );

@@ -430,6 +430,31 @@ void BasicSfM::printPointParams ( int idx ) const
   std::cout<<"point["<<idx<<"] : ("<<pt[0]<<", "<<pt[1]<<", "<<pt[2]<<")"<<std::endl;
 }
 
+// Added a helper function for computing the error since it became redundant
+double BasicSfM::computeReprojectionError(int obs_idx) const
+{
+  const double* camera = cameraBlockPtr(cam_pose_index_[obs_idx]);
+  const double* point  = pointBlockPtr(point_index_[obs_idx]);
+  const double* obs    = observations_.data() + (obs_idx * 2);
+
+  double p[3];
+  // Rotate
+  ceres::AngleAxisRotatePoint(camera, point, p);
+  // Translate
+  p[0] += camera[3]; p[1] += camera[4]; p[2] += camera[5];
+
+  // Check for division by zero (point behind camera)
+  if (std::fabs(p[2]) < 1e-10) return -1.0; 
+
+  // Project
+  double predicted_x = p[0] / p[2];
+  double predicted_y = p[1] / p[2];
+
+  // Calculate Euclidean distance
+  double dx = predicted_x - obs[0];
+  double dy = predicted_y - obs[1];
+  return std::sqrt(dx * dx + dy * dy);
+}
 
 void BasicSfM::solve()
 {
@@ -500,6 +525,43 @@ void BasicSfM::solve()
 
     if (incrementalReconstruction( seed_pair_idx0, seed_pair_idx1 ))
     {
+      int localized_cameras = 0;
+      for (int status : cam_pose_optim_iter_) 
+      {
+        if (status > 0) localized_cameras++;
+      }
+
+      int valid_points = 0;
+      for (int status : pts_optim_iter_) 
+      {
+        if (status > 0) valid_points++;
+      }
+
+      std::cout << "\n--- RECONSTRUCTION RESULTS ---" << std::endl;
+      std::cout << "Success Rate (Cameras): " << localized_cameras << "/" << num_cam_poses_ 
+                << " (" << (float)localized_cameras/num_cam_poses_ * 100 << "%)" << std::endl;
+      std::cout << "Reconstruction Density (Points): " << valid_points << " vertices" << std::endl;
+
+      double total_err = 0.0;
+      int n_obs = 0;
+      for (int i_obs = 0; i_obs < num_observations_; i_obs++) 
+      {
+        if (cam_pose_optim_iter_[cam_pose_index_[i_obs]] > 0 && pts_optim_iter_[point_index_[i_obs]] > 0) 
+        {
+          double err = computeReprojectionError(i_obs);
+          if (err >= 0)
+          {
+            total_err += err;
+            n_obs++;
+          }
+        }
+      }
+      if (n_obs > 0) 
+      {
+        std::cout << "Average Reprojection Error: " << total_err / n_obs << " (normalized pixels)" << std::endl;
+      }
+      std::cout << "------------------------------\n" << std::endl;
+
       std::cout<<"Recostruction completed, exiting"<<std::endl;
       return;
     }
@@ -917,31 +979,18 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
       {
         if (cam_pose_optim_iter_[cam_pose_index_[i_obs]] > 0 && pts_optim_iter_[point_index_[i_obs]] > 0)
         {
-          double *camera = cameraBlockPtr(cam_pose_index_[i_obs]);
-          double *point  = pointBlockPtr (point_index_[i_obs]);
-          double p[3];
+          double err = computeReprojectionError(i_obs);
           
-          ceres::AngleAxisRotatePoint(camera, point, p);
-          p[0] += camera[3]; p[1] += camera[4]; p[2] += camera[5];
+          if (err < 0) { diverged = true; break; }
           
-          // Zero-depth check
-          if (std::fabs(p[2]) < 1e-10) 
-          { 
-            diverged = true; break; 
-          }
-          
-          double px = p[0]/p[2], py = p[1]/p[2];
-          double ex = px - observations_[2*i_obs];
-          double ey = py - observations_[2*i_obs+1];
-          
-          total_err += std::sqrt(ex*ex + ey*ey);
+          total_err += err;
           n_obs++;
         }
       }
       if (n_obs > 0)
       {
         double mean_err = total_err / n_obs;
-        if (mean_err > 0.5)   // 0.5 in normalised coords ~ many pixels in pixel space
+        if (mean_err > 0.5)   // 0.5 in normalized coords
         {
           std::cout << "*** DIVERGENCE DETECTED: mean reproj error = " << mean_err << " ***" << std::endl;
           diverged = true;
@@ -1054,7 +1103,7 @@ void BasicSfM::bundleAdjustmentIter( int new_cam_idx )
 
         ceres::CostFunction* cost = ReprojectionError::Create(obs_x, obs_y);
 
-        // Robust Huber loss (scale = 2 * max_reproj_err_)
+        // Robust Huber loss (scale = 2 * max_reproj_err_) or NULL
         ceres::LossFunction* loss = new ceres::HuberLoss(2.0 * max_reproj_err_);
 
         problem.AddResidualBlock(cost, loss, cameraBlockPtr(cam_pose_index_[i_obs]), pointBlockPtr(point_index_[i_obs]));
@@ -1106,27 +1155,13 @@ int BasicSfM:: rejectOuliers()
   {
     if( cam_pose_optim_iter_[cam_pose_index_[i_obs]] > 0 && pts_optim_iter_[point_index_[i_obs]] > 0 )
     {
-      double *camera = cameraBlockPtr (cam_pose_index_[i_obs]),
-             *point = pointBlockPtr (point_index_[i_obs]),
-             *observation = observations_.data() + (i_obs * 2);
+      double error = computeReprojectionError(i_obs);
 
-      double p[3];
-      ceres::AngleAxisRotatePoint(camera, point, p);
-
-      // camera[3,4,5] are the translation.
-      p[0] += camera[3];
-      p[1] += camera[4];
-      p[2] += camera[5];
-
-      double predicted_x = p[0] / p[2];
-      double predicted_y = p[1] / p[2];
-
-      if ( fabs(predicted_x - observation[0]) > max_reproj_err_ ||
-           fabs(predicted_y - observation[1]) > max_reproj_err_ )
+      if ( error < 0 || error > max_reproj_err_ )
       {
         // Penalize the point
-        pts_optim_iter_[point_index_[i_obs]]-=2;
-        num_ouliers ++;
+        pts_optim_iter_[point_index_[i_obs]] -= 2;
+        num_ouliers++;
       }
     }
   }

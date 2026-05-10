@@ -62,9 +62,10 @@ void FeatureMatcher::extractFeatures()
 
   auto orb_detector = cv::ORB::create(10000, 1.2, 8);
 
+  std::cout<<"Computing descriptors..."<<std::endl;
   for( int i = 0; i < images_names_.size(); i++  )
   {
-    std::cout<<"Computing descriptors for image "<<i<<std::endl;
+    // std::cout<<"Computing descriptors for image "<<i<<std::endl;
     cv::Mat img = readUndistortedImage(images_names_[i]);
 
 
@@ -137,11 +138,12 @@ void FeatureMatcher::extractFeatures()
 
 void FeatureMatcher::exhaustiveMatching()
 {  
+  std::cout<<"Matching images..."<<std::endl;
   for( int i = 0; i < images_names_.size() - 1; i++ )
   {
     for( int j = i + 1; j < images_names_.size(); j++ )
     {
-      std::cout<<"Matching image "<<i<<" with image "<<j<<std::endl;
+      // std::cout<<"Matching image "<<i<<" with image "<<j<<std::endl;
       std::vector<cv::DMatch> matches, inlier_matches;
 
       if( use_modern_features_ )
@@ -206,8 +208,6 @@ void FeatureMatcher::exhaustiveMatching()
       int n_E = mask_E.empty() ? 0 : cv::countNonZero(mask_E);
       int n_H = mask_H.empty() ? 0 : cv::countNonZero(mask_H);
 
-      std::cout << "  inliers E=" << n_E << "  H=" << n_H << std::endl;
-
       if (n_E > 5)
       {
         for (int k = 0; k < (int)matches.size(); k++)
@@ -219,7 +219,12 @@ void FeatureMatcher::exhaustiveMatching()
       /////////////////////////////////////////////////////////////////////////////////////////
     }
   }
-  testMatches(0.5);
+  // FEATURE MATCHING METRICS
+  std::cout << "\n--- MATCHING SUMMARY ---" << std::endl;
+  std::cout << "Feature Type: " << (use_modern_features_ ? "Modern (SuperPoint)" : "ORB") << std::endl;
+  std::cout << "Total 3D Points initialized: " << num_points_ << std::endl;
+  std::cout << "Total Observations recorded: " << num_observations_ << std::endl;
+  std::cout << "------------------------\n" << std::endl;
 }
 
 void FeatureMatcher::writeToFile ( const std::string& filename, bool normalize_points ) const
