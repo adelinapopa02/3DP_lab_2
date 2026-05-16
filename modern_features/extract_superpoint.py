@@ -69,7 +69,6 @@ def extract(model, img_bgr, intrinsics, dist_coeffs, new_intrinsics,
     scores = scores.permute(1, 2, 0).reshape(Hc, Wc, 8, 8)
     scores = scores.permute(0, 2, 1, 3).reshape(H, W).numpy()
 
-    # NMS
     import torch.nn.functional as F
     ht = torch.from_numpy(scores).unsqueeze(0).unsqueeze(0)
     local_max = F.max_pool2d(ht, kernel_size=nms_radius*2+1,

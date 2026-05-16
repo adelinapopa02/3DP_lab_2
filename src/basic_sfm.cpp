@@ -50,7 +50,6 @@ struct ReprojectionError
     return true;
   }
 
-  // Factory method: creates a cost function with automatic differentiation.
   // Template params: <Functor, NumResiduals, CamBlockSize, PointBlockSize>
   static ceres::CostFunction* Create(double obs_x, double obs_y)
   {
@@ -902,7 +901,7 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
             // Store point and check cheirality for both cameras
             double *pt3d = pointBlockPtr(pt_idx);
             pt3d[0] = X; pt3d[1] = Y; pt3d[2] = Z;
-            pts_optim_iter_[pt_idx] = 1;  // mark temporarily
+            pts_optim_iter_[pt_idx] = 1;
   
             bool ok0 = checkCheiralityConstraint(new_cam_pose_idx, pt_idx);
             bool ok1 = checkCheiralityConstraint(cam_idx, pt_idx);
@@ -910,12 +909,9 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
             if (ok0 && ok1)
             {
               n_new_pts++;
-              // Keep pts_optim_iter_[pt_idx] = 1 (accepted)
             }
             else
             {
-              // Cheirality failed with this camera pair - reset to 0 so another
-              // registered camera may triangulate it successfully
               pts_optim_iter_[pt_idx] = 0;
               pt3d[0] = pt3d[1] = pt3d[2] = 0.0;
             }
@@ -959,7 +955,7 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
         double *cam = cameraBlockPtr(i_c);
         // Check translation magnitude
         double t_norm = std::sqrt(cam[3]*cam[3] + cam[4]*cam[4] + cam[5]*cam[5]);
-        // Check rotation magnitude (axis-angle norm)
+        // Check rotation magnitude
         double r_norm = std::sqrt(cam[0]*cam[0] + cam[1]*cam[1] + cam[2]*cam[2]);
 
         if (t_norm > 50.0 || r_norm > 10.0)
@@ -990,7 +986,7 @@ bool BasicSfM::incrementalReconstruction( int seed_pair_idx0, int seed_pair_idx1
       if (n_obs > 0)
       {
         double mean_err = total_err / n_obs;
-        if (mean_err > 0.5)   // 0.5 in normalized coords
+        if (mean_err > 0.5)  
         {
           std::cout << "*** DIVERGENCE DETECTED: mean reproj error = " << mean_err << " ***" << std::endl;
           diverged = true;
