@@ -26,6 +26,7 @@ The pipeline:
 | `sfm_app.cpp` | CLI entry point for the reconstruction stage. |
 | `modern_features/extract_superpoint.py` | Optional SuperPoint-based feature extractor used when the "modern features" flag is enabled. |
 | `point_clouds/` | Example reconstructions for both provided datasets, with ORB/modern features × Huber/null loss combinations. |
+| `Lab2_Report.pdf` | Report: pipeline description, ORB vs. modern features and Huber vs. null loss comparison, results discussion. |
 
 ---
 
@@ -68,4 +69,10 @@ Executables are produced in `build/bin/`.
 
 ## Datasets
 
-The `dataset/` folder contains two image sets with their calibration files. Preprocessed data files (already matched features) are provided for convenience, but final evaluation uses the raw input images, not the preprocessed ones.
+The `datasets/` folder contains the calibration files (`3dp_cam.yml`, `iphone16_1536x2048_calib.yml`) plus preprocessed feature-matching data files (`test_data1.txt`, `test_data2.txt`) that can be fed directly to `basic_sfm` for convenience. Final evaluation uses the raw input images, not the preprocessed files.
+
+---
+
+## Report
+
+See [`Lab2_Report.pdf`](./Lab2_Report.pdf) for the full write-up, including the reconstructions in `point_clouds/` compared across feature types (ORB vs. modern/SuperPoint) and loss functions (Huber vs. null).
